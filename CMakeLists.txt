@@ -30,6 +30,8 @@ else()
 endif()
 
 option(WITH_MULTIARCH       "Enable runtime dispatching to fastest supported CPU instruction set" ON)
+option(WITH_OPENCL          "Build the OpenCL GPU backend"                                      ON)
+option(WITH_CUDA            "Build the CUDA GPU backend"                                        OFF)
 
 # Check if primesieve is top level project ###########################
 
@@ -104,6 +106,50 @@ set(LIB_SRC src/api-c.cpp
             src/RiemannR.cpp
             src/SievingPrimes.cpp
             src/util.cpp)
+
+# GPU backends #######################################################
+
+# The OpenCL backend loads the OpenCL ICD loader at runtime, so it needs
+# no OpenCL SDK to build and no OpenCL import library to link. The CUDA
+# backend needs the CUDA toolkit and is therefore off by default.
+
+set(PRIMESIEVE_GPU_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gpu_generated")
+
+if(WITH_OPENCL OR WITH_CUDA)
+    set(LIB_SRC ${LIB_SRC}
+                src/gpu/GpuSieve.cpp
+                src/gpu/GpuTables.cpp)
+    list(APPEND PRIMESIEVE_COMPILE_DEFINITIONS "PRIMESIEVE_ENABLE_GPU")
+    file(MAKE_DIRECTORY "${PRIMESIEVE_GPU_GEN_DIR}")
+    include_directories("${PRIMESIEVE_GPU_GEN_DIR}")
+    # dlopen() lives in libdl on older Linux systems.
+    list(APPEND PRIMESIEVE_LINK_LIBRARIES ${CMAKE_DL_LIBS})
+endif()
+
+if(WITH_OPENCL)
+    # Embed the kernel source in the library so there are no data files
+    # to install or locate at runtime.
+    add_custom_command(
+        OUTPUT  "${PRIMESIEVE_GPU_GEN_DIR}/sieve_cl.hpp"
+        COMMAND ${CMAKE_COMMAND}
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/opencl/sieve.cl"
+                "-DOUTPUT=${PRIMESIEVE_GPU_GEN_DIR}/sieve_cl.hpp"
+                "-DSYMBOL=kSieveClSource"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_file.cmake"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/opencl/sieve.cl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_file.cmake"
+        COMMENT "Embedding the OpenCL sieve kernel")
+
+    set(LIB_SRC ${LIB_SRC}
+                src/gpu/opencl/cl_loader.cpp
+                src/gpu/opencl/OpenCLBackend.cpp
+                "${PRIMESIEVE_GPU_GEN_DIR}/sieve_cl.hpp")
+    list(APPEND PRIMESIEVE_COMPILE_DEFINITIONS "PRIMESIEVE_ENABLE_OPENCL")
+endif()
+
+if(WITH_CUDA)
+    include("${PROJECT_SOURCE_DIR}/cmake/gpu_cuda.cmake")
+endif()
 
 # Check if compiler supports CPU multiarch ###########################
 
@@ -244,10 +290,16 @@ install(FILES include/primesieve.h
               COMPONENT libprimesieve-headers
               DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-install(FILES include/primesieve/iterator.h
-              include/primesieve/iterator.hpp
-              include/primesieve/StorePrimes.hpp
-              include/primesieve/primesieve_error.hpp
+set(PRIMESIEVE_PUBLIC_HEADERS include/primesieve/iterator.h
+                              include/primesieve/iterator.hpp
+                              include/primesieve/StorePrimes.hpp
+                              include/primesieve/primesieve_error.hpp)
+
+if(WITH_OPENCL OR WITH_CUDA)
+    list(APPEND PRIMESIEVE_PUBLIC_HEADERS include/primesieve/gpu.hpp)
+endif()
+
+install(FILES ${PRIMESIEVE_PUBLIC_HEADERS}
               COMPONENT libprimesieve-headers
               DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/primesieve)
 

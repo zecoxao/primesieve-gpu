@@ -25,3 +25,6 @@ doc/Doxyfile
 doc/html
 doc/latex
 /build*
+
+# GPU port: local build trees
+/build/
