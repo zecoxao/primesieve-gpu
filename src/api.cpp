@@ -16,6 +16,9 @@
 
 #include <primesieve.hpp>
 #include <primesieve/config.hpp>
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  #include <primesieve/gpu.hpp>
+#endif
 #include <primesieve/macros.hpp>
 #include <primesieve/pmath.hpp>
 
@@ -44,6 +47,11 @@ uint64_t nth_prime(int64_t n, uint64_t start)
 
 uint64_t count_primes(uint64_t start, uint64_t stop)
 {
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  uint64_t gpuResult = 0;
+  if (gpu_try_count(start, stop, 0, gpuResult))
+    return gpuResult;
+#endif
   INDETERMINATE ParallelSieve ps;
   ps.sieve(start, stop, COUNT_PRIMES);
   return ps.getCount(0);
@@ -51,6 +59,11 @@ uint64_t count_primes(uint64_t start, uint64_t stop)
 
 uint64_t count_twins(uint64_t start, uint64_t stop)
 {
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  uint64_t gpuResult = 0;
+  if (gpu_try_count(start, stop, 1, gpuResult))
+    return gpuResult;
+#endif
   INDETERMINATE ParallelSieve ps;
   ps.sieve(start, stop, COUNT_TWINS);
   return ps.getCount(1);
@@ -58,6 +71,11 @@ uint64_t count_twins(uint64_t start, uint64_t stop)
 
 uint64_t count_triplets(uint64_t start, uint64_t stop)
 {
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  uint64_t gpuResult = 0;
+  if (gpu_try_count(start, stop, 2, gpuResult))
+    return gpuResult;
+#endif
   INDETERMINATE ParallelSieve ps;
   ps.sieve(start, stop, COUNT_TRIPLETS);
   return ps.getCount(2);
@@ -65,6 +83,11 @@ uint64_t count_triplets(uint64_t start, uint64_t stop)
 
 uint64_t count_quadruplets(uint64_t start, uint64_t stop)
 {
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  uint64_t gpuResult = 0;
+  if (gpu_try_count(start, stop, 3, gpuResult))
+    return gpuResult;
+#endif
   INDETERMINATE ParallelSieve ps;
   ps.sieve(start, stop, COUNT_QUADRUPLETS);
   return ps.getCount(3);
@@ -72,6 +95,11 @@ uint64_t count_quadruplets(uint64_t start, uint64_t stop)
 
 uint64_t count_quintuplets(uint64_t start, uint64_t stop)
 {
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  uint64_t gpuResult = 0;
+  if (gpu_try_count(start, stop, 4, gpuResult))
+    return gpuResult;
+#endif
   INDETERMINATE ParallelSieve ps;
   ps.sieve(start, stop, COUNT_QUINTUPLETS);
   return ps.getCount(4);
@@ -79,6 +107,11 @@ uint64_t count_quintuplets(uint64_t start, uint64_t stop)
 
 uint64_t count_sextuplets(uint64_t start, uint64_t stop)
 {
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  uint64_t gpuResult = 0;
+  if (gpu_try_count(start, stop, 5, gpuResult))
+    return gpuResult;
+#endif
   INDETERMINATE ParallelSieve ps;
   ps.sieve(start, stop, COUNT_SEXTUPLETS);
   return ps.getCount(5);

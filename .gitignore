@@ -28,3 +28,4 @@ doc/latex
 
 # GPU port: local build trees
 /build/
+/build-nogpu/

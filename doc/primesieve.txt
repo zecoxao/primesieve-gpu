@@ -43,6 +43,18 @@ OPTIONS
 *-d, --dist*='DIST'::
 	Sieve the interval ['START', 'START' + 'DIST'].
 
+*-g, --gpu*::
+	Count primes and prime k-tuplets on a GPU, using OpenCL or CUDA. The GPU
+	runs the same segmented sieve of Eratosthenes as the CPU, so the counts are
+	identical. primesieve falls back to its CPU sieve for small ranges, when
+	printing rather than counting, and when no GPU can be initialised.
+
+*--gpu-device*='NUM'::
+	Use GPU device 'NUM', as listed by *--gpu-info*. Implies *--gpu*.
+
+*--gpu-info*::
+	Print the available GPU devices.
+
 *-h, --help*::
 	Print this help menu.
 

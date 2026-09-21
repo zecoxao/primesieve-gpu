@@ -77,12 +77,35 @@ primesieve 1000000 --print=2
 
 # Count the prime triplets inside [1e10, 1e10+2^32]
 primesieve 1e10 --dist=2^32 --count=3
+
+# Count the primes ≤ 1e11 on a GPU
+primesieve 1e11 --count --gpu
 ```
 
 Note that printing primes and storing them in a text file are not primesieve's primary
 use cases: both run single-threaded as printing requires sequential ordering, and both
 use the same standard output path rather than file-specific I/O optimizations. For
 maximum throughput, generate primes in memory using [libprimesieve](doc/C_API.md).
+
+## GPU support
+
+primesieve can count primes and prime k-tuplets on a GPU, using either OpenCL or
+CUDA. The GPU runs the same segmented sieve of Eratosthenes as the CPU, with the
+same wheel-30 bit array, so the counts are identical.
+
+```bash
+primesieve --gpu-info        # list the GPU devices
+primesieve 1e11 --gpu        # ~2x faster than 12 CPU threads on a laptop RTX 3050
+```
+
+Both backends are built by default and **neither needs an SDK**: the OpenCL ICD
+loader, and the CUDA driver plus NVRTC, are all resolved at runtime, so
+libprimesieve still builds and runs on machines with no GPU runtime installed.
+`--gpu` never changes the answer — small ranges, printing, and machines without a
+working GPU fall back to the CPU sieve automatically.
+
+See [doc/GPU.md](doc/GPU.md) for the API, the tuning knobs, how the kernel works
+and the measured results.
 
 ## Stress testing
 
@@ -127,6 +150,11 @@ Options:
                              count prime triplets: -c3 or --count=3, ...
       --cpu-info             Print CPU information (cache sizes).
   -d, --dist=DIST            Sieve the interval [START, START + DIST].
+  -g, --gpu                  Count primes and prime k-tuplets on a GPU.
+                             Falls back to the CPU sieve for small ranges
+                             and if no GPU can be initialised.
+      --gpu-device=NUM       Use GPU device NUM, as listed by --gpu-info.
+      --gpu-info             Print the available GPU devices.
   -n, --nth-prime            Find the nth prime.
                              primesieve 100 -n: finds the 100th prime,
                              primesieve 2 100 -n: finds the 2nd prime > 100.

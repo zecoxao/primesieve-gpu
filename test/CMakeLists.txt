@@ -1,6 +1,11 @@
 enable_language(C)
 file(GLOB files "*.cpp" "*.c")
 
+# The GPU test only links when a GPU backend was built into libprimesieve.
+if(NOT WITH_OPENCL AND NOT WITH_CUDA)
+    list(REMOVE_ITEM files "${CMAKE_CURRENT_SOURCE_DIR}/gpu_count.cpp")
+endif()
+
 foreach(file ${files})
     get_filename_component(binary_name ${file} NAME_WE)
     add_executable(${binary_name} ${file})

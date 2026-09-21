@@ -333,6 +333,10 @@ CmdOptions parseOptions(int argc, char** argv)
     { "-c",                 std::make_pair(OPTION_COUNT, OPTIONAL_PARAM) },
     { "--count",            std::make_pair(OPTION_COUNT, OPTIONAL_PARAM) },
     { "--cpu-info",         std::make_pair(OPTION_CPU_INFO, NO_PARAM) },
+    { "-g",                 std::make_pair(OPTION_GPU, NO_PARAM) },
+    { "--gpu",              std::make_pair(OPTION_GPU, NO_PARAM) },
+    { "--gpu-device",       std::make_pair(OPTION_GPU_DEVICE, REQUIRED_PARAM) },
+    { "--gpu-info",         std::make_pair(OPTION_GPU_INFO, NO_PARAM) },
     { "-h",                 std::make_pair(OPTION_HELP, NO_PARAM) },
     { "--help",             std::make_pair(OPTION_HELP, NO_PARAM) },
     { "-n",                 std::make_pair(OPTION_NTH_PRIME, NO_PARAM) },
@@ -378,6 +382,8 @@ CmdOptions parseOptions(int argc, char** argv)
       case OPTION_TIMEOUT:     opts.optionTimeout(opt); break;
       case OPTION_SIZE:        opts.sieveSize = getVal<int>(opt); break;
       case OPTION_THREADS:     opts.threads = getVal<int>(opt); break;
+      case OPTION_GPU:         opts.gpu = true; break;
+      case OPTION_GPU_DEVICE:  opts.gpuDevice = getVal<int>(opt); opts.gpu = true; break;
       case OPTION_QUIET:       opts.quiet = true; break;
       case OPTION_NO_STATUS:   opts.status = false; break;
       case OPTION_TIME:        opts.time = true; break;

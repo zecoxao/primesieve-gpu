@@ -19,6 +19,9 @@ enum OptionID
 {
   OPTION_COUNT,
   OPTION_CPU_INFO,
+  OPTION_GPU,
+  OPTION_GPU_DEVICE,
+  OPTION_GPU_INFO,
   OPTION_HELP,
   OPTION_NTH_PRIME,
   OPTION_NO_STATUS,
@@ -58,6 +61,9 @@ struct CmdOptions
   int flags = 0;
   int sieveSize = 0;
   int threads = 0;
+  // Use a GPU backend for counting, and which device (-1 = best).
+  bool gpu = false;
+  int gpuDevice = -1;
   // Stress test timeout in seconds.
   // The default timeout is 24 hours (same as stress-ng).
   int64_t timeout = 24 * 3600;

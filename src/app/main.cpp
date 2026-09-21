@@ -23,7 +23,13 @@
 
 #include "CmdOptions.hpp"
 
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  #include <primesieve/gpu.hpp>
+#endif
+
 #include <CpuInfo.hpp>
+
+#include <chrono>
 #include <ParallelSieve.hpp>
 #include <RiemannR.hpp>
 #include <primesieve/macros.hpp>
@@ -91,6 +97,82 @@ void printSeconds(double sec)
 }
 
 /// Count & print primes and prime k-tuplets
+
+#if !defined(PRIMESIEVE_ENABLE_GPU)
+
+/// Reported when --gpu or --gpu-info is used but no GPU backend was built
+/// into this copy of primesieve.
+void noGpuSupport()
+{
+  std::cerr << "primesieve: this build has no GPU support; rebuild with "
+               "-DWITH_OPENCL=ON or -DWITH_CUDA=ON." << std::endl;
+}
+
+#endif
+
+#if defined(PRIMESIEVE_ENABLE_GPU)
+
+uint64_t gpuCountByType(uint64_t start, uint64_t stop, int countType)
+{
+  switch (countType)
+  {
+    case 0:  return primesieve::gpu_count_primes(start, stop);
+    case 1:  return primesieve::gpu_count_twins(start, stop);
+    case 2:  return primesieve::gpu_count_triplets(start, stop);
+    case 3:  return primesieve::gpu_count_quadruplets(start, stop);
+    case 4:  return primesieve::gpu_count_quintuplets(start, stop);
+    default: return primesieve::gpu_count_sextuplets(start, stop);
+  }
+}
+
+/// Count on the GPU, one pass per requested count type. Returns false when
+/// the GPU cannot serve this request -- printing, nothing to count, the
+/// range is too small to pay for a kernel launch, or the GPU failed -- and
+/// the caller then sieves on the CPU.
+bool sieveOnGpu(const CmdOptions& opts,
+                const ParallelSieve& ps,
+                Array<uint64_t, 6>& counts,
+                double& seconds)
+{
+  if (!opts.gpu || ps.isPrint())
+    return false;
+
+  bool anyCount = false;
+  for (int i = 0; i < 6; i++)
+    if (ps.isCount(i))
+      anyCount = true;
+  if (!anyCount)
+    return false;
+
+  uint64_t start = ps.getStart();
+  uint64_t stop = ps.getStop();
+  if (!primesieve::gpu_worthwhile(start, stop))
+    return false;
+
+  auto t1 = std::chrono::steady_clock::now();
+
+  try
+  {
+    // The CPU sieve can count every k-tuplet type in a single pass; the GPU
+    // counts one type per pass, which is still far quicker per pass.
+    for (int i = 0; i < 6; i++)
+      if (ps.isCount(i))
+        counts[i] = gpuCountByType(start, stop, i);
+  }
+  catch (const std::exception& e)
+  {
+    std::cerr << "primesieve: GPU counting failed (" << e.what()
+              << "), using the CPU sieve." << std::endl;
+    return false;
+  }
+
+  auto t2 = std::chrono::steady_clock::now();
+  seconds = std::chrono::duration<double>(t2 - t1).count();
+  return true;
+}
+
+#endif
+
 void sieve(const CmdOptions& opts)
 {
   if (opts.numbers.empty())
@@ -117,10 +199,28 @@ void sieve(const CmdOptions& opts)
     ps.setStop(opts.numbers[1]);
   }
 
-  if (!opts.quiet)
-    printSettings(ps);
+  Array<uint64_t, 6> counts;
+  counts.fill(0);
+  double seconds = 0;
+  bool usedGpu = false;
 
-  ps.sieve();
+#if defined(PRIMESIEVE_ENABLE_GPU)
+  if (!opts.quiet && opts.gpu && !primesieve::gpu_active_device().empty())
+    std::cout << "GPU = " << primesieve::gpu_active_device() << std::endl;
+
+  usedGpu = sieveOnGpu(opts, ps, counts, seconds);
+#endif
+
+  if (!usedGpu)
+  {
+    if (!opts.quiet)
+      printSettings(ps);
+
+    ps.sieve();
+    seconds = ps.getSeconds();
+    for (int i = 0; i < 6; i++)
+      counts[i] = ps.getCount(i);
+  }
 
   const Array<std::string, 6> labels =
   {
@@ -133,7 +233,7 @@ void sieve(const CmdOptions& opts)
   };
 
   if (opts.time)
-    printSeconds(ps.getSeconds());
+    printSeconds(seconds);
 
   // Did we count primes & k-tuplets simultaneously?
   int cnt = 0;
@@ -146,9 +246,9 @@ void sieve(const CmdOptions& opts)
     if (ps.isCount(i))
     {
       if (opts.quiet && cnt == 1)
-        std::cout << ps.getCount(i) << std::endl;
+        std::cout << counts[i] << std::endl;
       else
-        std::cout << labels[i] << ps.getCount(i) << std::endl;
+        std::cout << labels[i] << counts[i] << std::endl;
     }
   }
 }
@@ -327,15 +427,73 @@ void cpuInfo()
 
 } // namespace
 
+
+#if defined(PRIMESIEVE_ENABLE_GPU)
+
+/// --gpu-info: list the GPU devices primesieve can use.
+void gpuInfo()
+{
+  std::vector<std::string> devices = primesieve::gpu_devices();
+
+  if (devices.empty())
+  {
+    std::cout << "No GPU devices found." << std::endl;
+    std::string err = primesieve::gpu_last_error();
+    if (!err.empty())
+      std::cout << err << std::endl;
+    return;
+  }
+
+  std::cout << "GPU devices:" << std::endl;
+  for (std::size_t i = 0; i < devices.size(); i++)
+    std::cout << devices[i] << std::endl;
+}
+
+/// Turn on the GPU backend if --gpu was given. Counting then runs on the
+/// GPU whenever the range is large enough to pay for a kernel launch, and
+/// falls back to the CPU sieve otherwise.
+void applyGpuOptions(const CmdOptions& opts)
+{
+  if (!opts.gpu)
+    return;
+
+  primesieve::set_gpu_device(opts.gpuDevice);
+  primesieve::set_gpu_enabled(true);
+
+  if (primesieve::gpu_active_device().empty())
+  {
+    std::cerr << "primesieve: could not initialise a GPU, using the CPU sieve."
+              << std::endl;
+    std::string err = primesieve::gpu_last_error();
+    if (!err.empty())
+      std::cerr << "primesieve: " << err << std::endl;
+    primesieve::set_gpu_enabled(false);
+  }
+}
+
+#endif
+
 int main(int argc, char* argv[])
 {
   try
   {
     CmdOptions opts = parseOptions(argc, argv);
 
+#if defined(PRIMESIEVE_ENABLE_GPU)
+    applyGpuOptions(opts);
+#else
+    if (opts.gpu)
+      noGpuSupport();
+#endif
+
     switch (opts.option)
     {
       case OPTION_CPU_INFO:    cpuInfo(); break;
+#if defined(PRIMESIEVE_ENABLE_GPU)
+      case OPTION_GPU_INFO:    gpuInfo(); break;
+#else
+      case OPTION_GPU_INFO:    noGpuSupport(); break;
+#endif
       case OPTION_HELP:        help(/* exitCode */ 0); break;
       case OPTION_NTH_PRIME:   nthPrime(opts); break;
       case OPTION_R:           RiemannR(opts); break;

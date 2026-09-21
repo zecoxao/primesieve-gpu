@@ -73,6 +73,13 @@ uint64_t gpu_count_quadruplets(uint64_t start, uint64_t stop);
 uint64_t gpu_count_quintuplets(uint64_t start, uint64_t stop);
 uint64_t gpu_count_sextuplets(uint64_t start, uint64_t stop);
 
+/// Used by count_primes() and the k-tuplet counts when the GPU has been
+/// enabled with set_gpu_enabled(true). Returns false when the GPU was not
+/// used -- because it is disabled, unavailable, or the range is too small to
+/// pay for a kernel launch -- and the caller then sieves on the CPU. A GPU
+/// failure is reported the same way, so a broken GPU never breaks a count.
+bool gpu_try_count(uint64_t start, uint64_t stop, int countType, uint64_t& result);
+
 } // namespace primesieve
 
 #endif
