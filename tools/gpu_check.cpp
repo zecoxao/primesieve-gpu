@@ -182,6 +182,10 @@ void tune()
         primesieve::set_gpu_segments_per_launch(segs[k]);
         try
         {
+          // Changing any tunable recreates the backend, so run once to pay
+          // the OpenCL program build and the sieving prime generation, and
+          // time the second run.
+          primesieve::gpu_count_primes(a, a + 1000000);
           double t0 = now();
           uint64_t got = primesieve::gpu_count_primes(a, b);
           double dt = now() - t0;

@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -138,6 +139,7 @@ private:
   uint32_t sieveBytes_ = 0;
   uint32_t workGroupSize_ = 0;
   uint32_t segmentsPerLaunch_ = 0;
+  uint32_t maxSegmentsPerLaunch_ = 0;
   bool     usePreSieve_ = true;
 
   PreSieveTables preSieve_;
@@ -316,9 +318,17 @@ bool OpenCLBackend::init(const DeviceInfo& info, const GpuConfig& config, std::s
   }
   workGroupSize_ = wg;
 
-  // Local memory holds the sieve plus the reduction scratch.
+  // Local memory holds the sieve, the reduction scratch, and the kernel's
+  // own static __local arrays (the wheel tables). The last of those is easy
+  // to forget: leaving it out makes the largest sieve sizes fail at launch
+  // with CL_OUT_OF_RESOURCES rather than at build time.
+  cl_ulong staticLocal = 0;
+  cl_->GetKernelWorkGroupInfo(kernel_, dev_, CL_KERNEL_LOCAL_MEM_SIZE,
+                              sizeof staticLocal, &staticLocal, nullptr);
+
   uint64_t scratch = (uint64_t) wg * sizeof(uint64_t);
-  if (info_.localMemBytes <= scratch + 1024)
+  uint64_t reserved = scratch + (uint64_t) staticLocal + 256;
+  if (info_.localMemBytes <= reserved + 256)
   {
     error = "OpenCL: device has too little local memory";
     return false;
@@ -327,7 +337,7 @@ bool OpenCLBackend::init(const DeviceInfo& info, const GpuConfig& config, std::s
   // 16 KiB keeps several work-groups resident per compute unit, which hides
   // the latency of the local-memory atomics better than one huge segment.
   uint32_t sieveBytes = config.sieveBytes ? config.sieveBytes : 16384;
-  uint64_t maxSieve = info_.localMemBytes - scratch - 256;
+  uint64_t maxSieve = info_.localMemBytes - reserved;
   sieveBytes = (uint32_t) std::min<uint64_t>(sieveBytes, maxSieve);
 
   // The kernel slices a segment across a whole work-group and across a
@@ -344,7 +354,9 @@ bool OpenCLBackend::init(const DeviceInfo& info, const GpuConfig& config, std::s
 
   segmentsPerLaunch_ = config.segmentsPerLaunch;
   if (segmentsPerLaunch_ == 0)
-    segmentsPerLaunch_ = std::max<uint32_t>(info_.computeUnits, 1) * 64;
+    segmentsPerLaunch_ = std::max<uint32_t>(info_.computeUnits, 1) * 256;
+  segmentsPerLaunch_ = std::max<uint32_t>(segmentsPerLaunch_, 1);
+  maxSegmentsPerLaunch_ = segmentsPerLaunch_;
 
   usePreSieve_ = config.preSieve;
 
@@ -531,7 +543,19 @@ uint64_t OpenCLBackend::count(uint64_t lo, uint64_t hi, int countType)
     uint64_t remaining = (hi - segLow) / span + 1;
     uint32_t n = (uint32_t) std::min<uint64_t>(remaining, segmentsPerLaunch_);
 
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     total += runLaunch(segLow, n, lo, hi, countType);
+    double seconds = std::chrono::duration<double>(
+                       std::chrono::steady_clock::now() - t0).count();
+
+    // Keep a single launch short. Desktop OSes reset a GPU whose kernel runs
+    // for a couple of seconds (Windows calls it TDR), and the work per
+    // segment grows with pi(sqrt(stop)), so a launch size that is fine near
+    // 1e10 can be far too long near 1e18.
+    if (seconds > 0.75 && segmentsPerLaunch_ > 16)
+      segmentsPerLaunch_ = std::max<uint32_t>(segmentsPerLaunch_ / 2, 16);
+    else if (seconds < 0.05 && segmentsPerLaunch_ < maxSegmentsPerLaunch_)
+      segmentsPerLaunch_ = std::min(segmentsPerLaunch_ * 2, maxSegmentsPerLaunch_);
 
     if (remaining <= n)
       break;
