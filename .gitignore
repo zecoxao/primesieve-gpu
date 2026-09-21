@@ -29,3 +29,5 @@ doc/latex
 # GPU port: local build trees
 /build/
 /build-nogpu/
+# NVRTC redistributable used by the CUDA backend (not ours to vendor in git)
+/thirdparty/

@@ -30,7 +30,14 @@ std::once_flag g_once;
 
 #if defined(_WIN32)
   typedef HMODULE LibHandle;
-  LibHandle openLib(const char* name) { return LoadLibraryA(name); }
+  LibHandle openLib(const char* name)
+  {
+    // LOAD_WITH_ALTERED_SEARCH_PATH makes Windows resolve the library's own
+    // dependencies from the directory it lives in. NVRTC needs it: loading
+    // nvrtc64_*.dll by absolute path otherwise fails to find the
+    // nvrtc-builtins DLL sitting right next to it.
+    return LoadLibraryExA(name, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+  }
   void* symbol(LibHandle h, const char* n) { return (void*) GetProcAddress(h, n); }
   const char* const kDriver[] = { "nvcuda.dll" };
   // NVRTC carries its CUDA major version in the file name.
@@ -47,6 +54,35 @@ std::once_flag g_once;
     "libnvrtc.so", "libnvrtc.so.13", "libnvrtc.so.12", "libnvrtc.so.11.2"
   };
 #endif
+
+/// Make the directory containing `libPath` searchable for shared libraries,
+/// so that a library loaded from there can find its own siblings.
+void addLibraryDirectoryOf(const char* libPath)
+{
+  std::string path(libPath);
+  std::size_t cut = path.find_last_of("/\\");
+  if (cut == std::string::npos)
+    return;
+  std::string dir = path.substr(0, cut);
+  if (dir.empty())
+    return;
+
+#if defined(_WIN32)
+  std::string current;
+  if (const char* env = std::getenv("PATH"))
+    current = env;
+  if (current.find(dir) == std::string::npos)
+  {
+    std::string updated = "PATH=" + dir + ";" + current;
+    _putenv(updated.c_str());
+  }
+#else
+  // On POSIX the dynamic loader reads LD_LIBRARY_PATH once at start-up, so
+  // changing it here would not help; dlopen()ing the sibling by name from
+  // the same directory is handled by the loader's RUNPATH instead.
+  (void) dir;
+#endif
+}
 
 struct Bind { const char* name; void** slot; };
 
@@ -121,6 +157,13 @@ void loadNvrtc(primesieve::gpu::CudaApi& api)
 {
   if (const char* custom = std::getenv("PRIMESIEVE_NVRTC_PATH"))
   {
+    // NVRTC loads its own nvrtc-builtins library while compiling, using the
+    // ordinary search order rather than its own directory. Loading NVRTC by
+    // an absolute path therefore is not enough: put that directory on the
+    // search path too, or the compile fails with
+    // NVRTC_ERROR_BUILTIN_OPERATION_FAILURE.
+    addLibraryDirectoryOf(custom);
+
     LibHandle lib = openLib(custom);
     if (lib && bindNvrtc(lib, api))
     {

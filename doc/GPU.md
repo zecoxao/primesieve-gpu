@@ -67,7 +67,9 @@ failure. `set_gpu_sieve_size()`, `set_gpu_work_group_size()`,
 
   NVRTC **must not be newer than the driver's CUDA version**, or the driver
   cannot JIT the PTX it emits. primesieve reports this case explicitly.
-  `PRIMESIEVE_NVRTC_PATH` points the loader at a specific NVRTC library.
+  `PRIMESIEVE_NVRTC_PATH` points the loader at a specific NVRTC library;
+  its directory is added to the library search path too, because NVRTC
+  loads its own `nvrtc-builtins` sibling while compiling.
 
 `PRIMESIEVE_GPU_CL_OPTIONS` is appended to the OpenCL build options, for
 tuning and profiling builds.
