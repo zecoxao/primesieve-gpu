@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -149,6 +150,8 @@ private:
   std::vector<uint64_t> magics_;
   uint32_t primesUpTo_ = 0;
   uint32_t firstPrimeIdx_ = 0;
+  uint32_t tier1End_ = 0;
+  uint32_t tier2End_ = 0;
   cl_mem   bufPrimes_ = nullptr;
   cl_mem   bufMagics_ = nullptr;
 
@@ -256,9 +259,24 @@ bool OpenCLBackend::init(const DeviceInfo& info, const GpuConfig& config, std::s
     return false;
   }
 
-  err = cl_->BuildProgram(program_, 1, &dev_, "-cl-std=CL1.2", nullptr, nullptr);
+  // PRIMESIEVE_GPU_CL_OPTIONS is appended to the OpenCL build options. It is
+  // meant for tuning and profiling, e.g. -DPS_NO_CROSSOFF to time the other
+  // phases of the kernel in isolation.
+  std::string options = "-cl-std=CL1.2";
+  if (const char* extra = std::getenv("PRIMESIEVE_GPU_CL_OPTIONS"))
+  {
+    options += " ";
+    options += extra;
+  }
+
+  err = cl_->BuildProgram(program_, 1, &dev_, options.c_str(), nullptr, nullptr);
   if (err != CL_SUCCESS)
-    err = cl_->BuildProgram(program_, 1, &dev_, "", nullptr, nullptr);
+  {
+    std::string fallback;
+    if (const char* extra = std::getenv("PRIMESIEVE_GPU_CL_OPTIONS"))
+      fallback = extra;
+    err = cl_->BuildProgram(program_, 1, &dev_, fallback.c_str(), nullptr, nullptr);
+  }
 
   if (err != CL_SUCCESS)
   {
@@ -311,8 +329,13 @@ bool OpenCLBackend::init(const DeviceInfo& info, const GpuConfig& config, std::s
   uint32_t sieveBytes = config.sieveBytes ? config.sieveBytes : 16384;
   uint64_t maxSieve = info_.localMemBytes - scratch - 256;
   sieveBytes = (uint32_t) std::min<uint64_t>(sieveBytes, maxSieve);
-  sieveBytes &= ~3u;                       // whole 32-bit words
-  if (sieveBytes < 256)
+
+  // The kernel slices a segment across a whole work-group and across a
+  // single warp, so the segment must divide evenly by both (and by 4, to be
+  // a whole number of 32-bit sieve words).
+  uint32_t granularity = std::max<uint32_t>(wg, 32u);
+  sieveBytes = (sieveBytes / granularity) * granularity;
+  if (sieveBytes < granularity || sieveBytes < 256)
   {
     error = "OpenCL: device has too little local memory for a useful segment";
     return false;
@@ -329,7 +352,7 @@ bool OpenCLBackend::init(const DeviceInfo& info, const GpuConfig& config, std::s
   if (usePreSieve_)
   {
     preSieve_ = buildPreSieveTables(defaultPreSieveGroups());
-    bufPreSieve_ = createBuffer(CL_MEM_READ_ONLY, preSieve_.data.size(), preSieve_.data.data(), "pre-sieve tables");
+    bufPreSieve_ = createBuffer(CL_MEM_READ_ONLY, preSieve_.data.size() * sizeof(uint32_t), preSieve_.data.data(), "pre-sieve tables");
     bufPreLen_   = createBuffer(CL_MEM_READ_ONLY, preSieve_.len.size() * 4, preSieve_.len.data(), "pre-sieve lengths");
     bufPreOff_   = createBuffer(CL_MEM_READ_ONLY, preSieve_.off.size() * 4, preSieve_.off.data(), "pre-sieve offsets");
     bufRestore_  = createBuffer(CL_MEM_READ_ONLY, preSieve_.restore.size(), preSieve_.restore.data(), "pre-sieve restore bytes");
@@ -368,6 +391,23 @@ void OpenCLBackend::ensureSievingPrimes(uint32_t sqrtHi)
   if (usePreSieve_)
     while (firstPrimeIdx_ < primes_.size() && primes_[firstPrimeIdx_] <= preSieve_.maxPrime)
       firstPrimeIdx_++;
+
+  // Split the sieving primes into the three groups the kernel uses. A prime
+  // has about (sliceBytes * 8 / p) multiples in a slice; slicing it across
+  // several work-items only pays while that number stays comfortably above
+  // the one extra setup each slice costs, so the cutoff for a group of N
+  // work-items is p < 2 * sieveBytes / N.
+  {
+    uint32_t tier1Limit = std::max<uint32_t>(2u * sieveBytes_ / workGroupSize_, 1u);
+    uint32_t tier2Limit = std::max<uint32_t>(2u * sieveBytes_ / 32u, tier1Limit);
+
+    tier1End_ = firstPrimeIdx_;
+    while (tier1End_ < primes_.size() && primes_[tier1End_] < tier1Limit)
+      tier1End_++;
+    tier2End_ = tier1End_;
+    while (tier2End_ < primes_.size() && primes_[tier2End_] < tier2Limit)
+      tier2End_++;
+  }
 
   // One reciprocal per sieving prime, so that the kernel can replace its
   // hottest 64-bit division with a multiply-high plus a shift.
@@ -431,6 +471,8 @@ uint64_t OpenCLBackend::runLaunch(uint64_t segLowBase, uint32_t numSegments,
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &useMagic);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &numPrimes);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &firstPrimeIdx_);
+  err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &tier1End_);
+  err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &tier2End_);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_mem),   &bufPreSieve_);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &preTables);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_mem),   &bufPreLen_);

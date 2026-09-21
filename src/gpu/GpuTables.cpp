@@ -65,15 +65,18 @@ PreSieveTables buildPreSieveTables(const std::vector<std::vector<uint32_t>>& gro
 
     uint32_t len = (uint32_t) period;
     uint32_t off = (uint32_t) out.data.size();
-    out.data.resize(out.data.size() + len, 0xff);
     out.len.push_back(len);
     out.off.push_back(off);
+
+    // Build the pattern one byte per period position first, then fold it
+    // into the sliding-window form the GPU reads.
+    std::vector<uint8_t> pattern(len, 0xff);
 
     // Clear every bit whose value is divisible by one of the group's primes.
     // The pattern covers the numbers [0, len*30); because the period is a
     // multiple of each prime, applying it at any multiple-of-30 offset
     // removes exactly the multiples of those primes.
-    uint8_t* table = out.data.data() + off;
+    uint8_t* table = pattern.data();
     for (uint32_t p : group)
     {
       // Walk the multiples of p that are coprime to 30.
@@ -90,6 +93,16 @@ PreSieveTables buildPreSieveTables(const std::vector<std::vector<uint32_t>>& gro
         table[byteIndex] &= (uint8_t) ~(1u << bit);
       }
     }
+
+    // Fold into the sliding window: element i holds the four pattern bytes
+    // starting at i, so the kernel reads a whole sieve word in one load.
+    out.data.resize(out.data.size() + len);
+    uint32_t* window = out.data.data() + off;
+    for (uint32_t i = 0; i < len; i++)
+      window[i] =  (uint32_t) pattern[i]
+                | ((uint32_t) pattern[(i + 1) % len] << 8)
+                | ((uint32_t) pattern[(i + 2) % len] << 16)
+                | ((uint32_t) pattern[(i + 3) % len] << 24);
   }
 
   // Pre-sieving removed the small primes themselves. Rebuild the first few

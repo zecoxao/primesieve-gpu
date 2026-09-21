@@ -27,11 +27,15 @@ namespace gpu {
 /// much cheaper than crossing off those primes one multiple at a time.
 struct PreSieveTables
 {
-  /// All tables concatenated.
-  std::vector<uint8_t>  data;
+  /// All tables concatenated, as a sliding window: element i of a table
+  /// holds the four pattern bytes starting at byte i (wrapping at the end
+  /// of the period). That lets the kernel fill a 32-bit sieve word with one
+  /// coalesced load instead of four byte loads, at the cost of 4x memory --
+  /// still small enough to stay resident in a GPU's L2 cache.
+  std::vector<uint32_t> data;
   /// Period of each table, in bytes.
   std::vector<uint32_t> len;
-  /// Offset of each table inside `data`.
+  /// Offset of each table inside `data`, in 32-bit elements.
   std::vector<uint32_t> off;
   /// Largest prime removed by the tables.
   uint32_t maxPrime = 0;
@@ -40,7 +44,7 @@ struct PreSieveTables
   /// exactly like primesieve's PreSieve::primeBits does on the CPU.
   std::vector<uint8_t>  restore;
 
-  uint64_t totalBytes() const { return (uint64_t) data.size(); }
+  uint64_t totalBytes() const { return (uint64_t) data.size() * 4; }
 };
 
 /// Build the pre-sieve patterns for the given prime groups, e.g.

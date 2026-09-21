@@ -29,38 +29,65 @@ inline void psClearBit(volatile __local uint* sieve, uint byteIdx, uint unsetBit
   atomic_and(&sieve[word], ~((uint)(0xffu ^ unsetBit) << shift));
 }
 
-// Cross off the multiples of every sieving prime in the current segment.
-inline void psCrossOff(volatile __local uint* sieve,
-                       __local const uint* wheel,
-                       __local const uint* wheelInit,
-                       __local const uint* wheelOffset,
-                       __global const uint* primes,
-                       __global const ulong* magics,
-                       uint useMagic,
-                       uint numPrimes,
-                       uint firstPrime,
-                       uint sieveBytes,
-                       ulong low,
-                       uint lid,
-                       uint lsz)
+//
+// Cross off the multiples of the sieving primes in [begin, end).
+//
+// The work is split along two axes at once:
+//
+//   * primeStride / groupId  -- which work-items share a prime,
+//   * numSlices / sliceId    -- which part of the segment this work-item owns.
+//
+// The number of multiples a prime has in a segment is proportional to 1/p,
+// so the smallest sieving prime has thousands of times more work than the
+// largest. Giving every work-item its own prime (numSlices == 1) therefore
+// leaves the whole work-group waiting for the few items that drew the
+// smallest primes. Splitting a small prime across many work-items, each
+// crossing off its own slice of the segment, removes that imbalance; it
+// costs one extra setup per slice, which only pays while the prime is small
+// enough to have several multiples per slice. The caller picks the cutoffs.
+//
+// A bonus of slicing is that every work-item in a warp then walks the *same*
+// prime, so the trip counts are equal and the warp does not diverge.
+//
+inline void psCrossOffRange(volatile __local uint* sieve,
+                            __local const uint* wheel,
+                            __local const uint* wheelInit,
+                            __local const uint* wheelOffset,
+                            __global const uint* primes,
+                            __global const ulong* magics,
+                            uint useMagic,
+                            uint begin,
+                            uint end,
+                            uint primeStride,
+                            uint groupId,
+                            uint numSlices,
+                            uint sliceId,
+                            uint sieveBytes,
+                            ulong segLow)
 {
-  for (uint i = firstPrime + lid; i < numPrimes; i += lsz)
+  uint sliceBytes = sieveBytes / numSlices;
+  uint sliceStart = sliceId * sliceBytes;
+
+  // Bit b of byte i stands for segmentLow + i*30 + {7,...,31}[b], so the
+  // multiples wanted are those greater than the slice's base + 6.
+  ulong low = segLow + (ulong) sliceStart * 30 + 6;
+
+  for (uint i = begin + groupId; i < end; i += primeStride)
   {
     uint p = primes[i];
 
-    // First multiple of p that is > low, rounded up to a multiple of p
-    // whose cofactor is coprime to 30 (primesieve's Wheel::addSievingPrime).
+    // First multiple of p that is > low, rounded up to a multiple of p whose
+    // cofactor is coprime to 30 (primesieve's Wheel::addSievingPrime).
     //
-    // low / p is the hottest division in the sieve: it runs once per sieving
-    // prime per segment, and a 64-bit division is emulated in ~70
-    // instructions on a GPU. Replace it with the precomputed reciprocal
-    // whenever the range is small enough for the identity to hold
-    // (low < 2^63); otherwise fall back to the real division.
+    // This division runs once per sieving prime per slice, and a 64-bit
+    // division is emulated in ~70 instructions on a GPU, so use the
+    // precomputed reciprocal whenever the identity holds (low < 2^63).
     ulong q;
     if (useMagic)
       q = (mul_hi(low, magics[i]) >> (31u - clz(p))) + 1;
     else
       q = low / p + 1;
+
     if (q < (ulong) p)
       q = (ulong) p;
 
@@ -72,7 +99,7 @@ inline void psCrossOff(volatile __local uint* sieve,
       continue;
 
     ulong byteIdx64 = (m - low) / 30;
-    if (byteIdx64 >= (ulong) sieveBytes)
+    if (byteIdx64 >= (ulong) sliceBytes)
       continue;
 
     uint byteIdx = (uint) byteIdx64;
@@ -81,10 +108,10 @@ inline void psCrossOff(volatile __local uint* sieve,
 
     // pdiv30 * nextMultipleFactor <= (2^32/30)*6 < 2^30, so byteIdx cannot
     // wrap around before the loop condition stops it.
-    while (byteIdx < sieveBytes)
+    while (byteIdx < sliceBytes)
     {
       uint e = wheel[state];
-      psClearBit(sieve, byteIdx, e & 0xffu);
+      psClearBit(sieve, sliceStart + byteIdx, e & 0xffu);
       byteIdx += pdiv30 * ((e >> 8) & 0xffu) + ((e >> 16) & 0xffu);
       state    = e >> 24;
     }
@@ -92,11 +119,11 @@ inline void psCrossOff(volatile __local uint* sieve,
 }
 
 // Zero the bits of `word` whose values fall outside [rangeLo, rangeHi].
-// `wordLow` is the value represented by bit 0 of byte 0 of this word minus 7,
-// i.e. segmentLow + (wordIndex*4)*30.
+// `wordBase` is segmentLow + (wordIndex*4)*30, i.e. 7 below the smallest
+// value the word can represent.
 inline uint psMaskWord(uint word, ulong wordBase, ulong rangeLo, ulong rangeHi)
 {
-  ulong lo = wordBase + 7;        // smallest value in this word
+  ulong lo = wordBase + 7;         // smallest value in this word
   ulong hi = wordBase + 3*30 + 31; // largest value in this word
 
   if (lo >= rangeLo && hi <= rangeHi)
@@ -133,9 +160,15 @@ inline ulong psReduce(__local ulong* scratch, ulong value, uint lid, uint lsz)
 }
 
 //
-// countType 0  -> count primes (popcount of the sieve)
-// countType 1..5 -> count twins, triplets, quadruplets, quintuplets,
-//                   sextuplets via the per-byte lookup table psKTable.
+// countType 0    -> count primes (popcount of the sieve)
+// countType 1..5 -> count twins, triplets, quadruplets, quintuplets and
+//                   sextuplets via the per-byte lookup table kTable.
+//
+// tier1End / tier2End split the sieving primes into the three groups
+// described above psCrossOffRange():
+//   [firstPrime, tier1End)  one prime at a time, sliced across the group
+//   [tier1End,   tier2End)  one prime per warp, sliced across the warp
+//   [tier2End,   numPrimes) one prime per work-item, whole segment
 //
 __kernel void ps_count(const ulong segLowBase,
                        const uint  sieveBytes,
@@ -147,7 +180,9 @@ __kernel void ps_count(const ulong segLowBase,
                        const uint  useMagic,
                        const uint  numPrimes,
                        const uint  firstPrime,
-                       __global const uchar* presieve,
+                       const uint  tier1End,
+                       const uint  tier2End,
+                       __global const uint*  presieve,
                        const uint  presieveTables,
                        __global const uint*  presieveLen,
                        __global const uint*  presieveOff,
@@ -167,9 +202,9 @@ __kernel void ps_count(const ulong segLowBase,
   uint lsz   = get_local_size(0);
   uint words = sieveBytes >> 2;
 
-  // The cross-off loop indexes the wheel table with a per-prime state, so
-  // the accesses inside a warp are divergent. In __constant memory NVIDIA
-  // serialises those up to 32 ways per step; a local-memory copy is banked
+  // The cross-off loop indexes the wheel table with a per-prime state, so the
+  // accesses inside a warp are divergent. NVIDIA serialises divergent
+  // __constant reads up to 32 ways per step; a local-memory copy is banked
   // and handles divergent indices far better.
   __local uint wheelLocal[64];
   __local uint wheelInitLocal[30];
@@ -184,7 +219,6 @@ __kernel void ps_count(const ulong segLowBase,
 
   ulong span   = (ulong) sieveBytes * 30;
   ulong segLow = segLowBase + (ulong) seg * span;
-  ulong low    = segLow + 6;
 
   // ---- 1. initialise the sieve ------------------------------------------
   // Without pre-sieving every bit starts set. With pre-sieving the multiples
@@ -212,14 +246,9 @@ __kernel void ps_count(const ulong segLowBase,
 
       for (uint i = lid; i < words; i += lsz)
       {
-        uint j = idx;
-        uint v =  (uint) presieve[off + j];
-        j++; if (j >= len) j -= len;
-        v |= ((uint) presieve[off + j]) << 8;
-        j++; if (j >= len) j -= len;
-        v |= ((uint) presieve[off + j]) << 16;
-        j++; if (j >= len) j -= len;
-        v |= ((uint) presieve[off + j]) << 24;
+        // The table is stored as a sliding window, so the four pattern bytes
+        // of this sieve word are a single coalesced load.
+        uint v = presieve[off + idx];
 
         if (t == 0)
           sieve[i] = v;
@@ -253,9 +282,39 @@ __kernel void ps_count(const ulong segLowBase,
   barrier(CLK_LOCAL_MEM_FENCE);
 
   // ---- 2. cross off the sieving primes ----------------------------------
-  psCrossOff(sieve, wheelLocal, wheelInitLocal, wheelOffsetLocal,
-             primes, magics, useMagic, numPrimes,
-             firstPrime, sieveBytes, low, lid, lsz);
+#if !defined(PS_NO_CROSSOFF)
+  uint lane    = lid & 31u;
+  uint warp    = lid >> 5;
+  uint nwarps  = lsz >> 5;
+  if (nwarps == 0)
+    nwarps = 1;
+
+  // Smallest primes: the whole work-group walks one prime at a time, each
+  // work-item over its own slice of the segment.
+  psCrossOffRange(sieve, wheelLocal, wheelInitLocal, wheelOffsetLocal,
+                  primes, magics, useMagic,
+                  firstPrime, tier1End,
+                  /* primeStride */ 1u, /* groupId */ 0u,
+                  /* numSlices */ lsz, /* sliceId */ lid,
+                  sieveBytes, segLow);
+
+  // Medium primes: one prime per warp, sliced across the 32 lanes.
+  psCrossOffRange(sieve, wheelLocal, wheelInitLocal, wheelOffsetLocal,
+                  primes, magics, useMagic,
+                  tier1End, tier2End,
+                  /* primeStride */ nwarps, /* groupId */ warp,
+                  /* numSlices */ 32u, /* sliceId */ lane,
+                  sieveBytes, segLow);
+
+  // Large primes: too few multiples per segment to be worth slicing.
+  psCrossOffRange(sieve, wheelLocal, wheelInitLocal, wheelOffsetLocal,
+                  primes, magics, useMagic,
+                  tier2End, numPrimes,
+                  /* primeStride */ lsz, /* groupId */ lid,
+                  /* numSlices */ 1u, /* sliceId */ 0u,
+                  sieveBytes, segLow);
+#endif
+
   barrier(CLK_LOCAL_MEM_FENCE);
 
   // ---- 3. mask the range boundaries and count ---------------------------
