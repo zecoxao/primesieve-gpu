@@ -160,6 +160,45 @@ void bench()
   }
 }
 
+
+void tune()
+{
+  const uint64_t a = 0, b = 10000000000ull;   // 1e10
+  std::printf("\n== geometry sweep, counting primes in [0, 1e10] ==\n");
+  std::printf("%10s %6s %8s %10s\n", "sieveKiB", "wg", "segs", "time (s)");
+
+  const int sieveKiB[] = { 4, 8, 16, 32, 46 };
+  const int wgs[]      = { 64, 128, 256, 512 };
+  const int segs[]     = { 256, 1024, 4096 };
+
+  double best = 1e30; int bs = 0, bw = 0, bg = 0;
+
+  for (std::size_t i = 0; i < sizeof(sieveKiB)/sizeof(sieveKiB[0]); i++)
+    for (std::size_t j = 0; j < sizeof(wgs)/sizeof(wgs[0]); j++)
+      for (std::size_t k = 0; k < sizeof(segs)/sizeof(segs[0]); k++)
+      {
+        primesieve::set_gpu_sieve_size(sieveKiB[i]);
+        primesieve::set_gpu_work_group_size(wgs[j]);
+        primesieve::set_gpu_segments_per_launch(segs[k]);
+        try
+        {
+          double t0 = now();
+          uint64_t got = primesieve::gpu_count_primes(a, b);
+          double dt = now() - t0;
+          bool ok = (got == 455052511ull);
+          std::printf("%10d %6d %8d %10.3f %s\n", sieveKiB[i], wgs[j], segs[k], dt,
+                      ok ? "" : "WRONG");
+          if (ok && dt < best) { best = dt; bs = sieveKiB[i]; bw = wgs[j]; bg = segs[k]; }
+        }
+        catch (const std::exception& e)
+        {
+          std::printf("%10d %6d %8d %10s %s\n", sieveKiB[i], wgs[j], segs[k], "-", e.what());
+        }
+      }
+
+  std::printf("\nbest: sieve=%d KiB wg=%d segs=%d -> %.3f s\n", bs, bw, bg, best);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -176,10 +215,13 @@ int main(int argc, char** argv)
   }
 
   bool doBench = false;
+  bool doTune = false;
   for (int i = 1; i < argc; i++)
   {
     if (std::strcmp(argv[i], "bench") == 0)
       doBench = true;
+    else if (std::strcmp(argv[i], "tune") == 0)
+      doTune = true;
     else if (std::strcmp(argv[i], "dev") == 0 && i + 1 < argc)
       primesieve::set_gpu_device(std::atoi(argv[++i]));
   }
@@ -191,7 +233,9 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  if (doBench)
+  if (doTune)
+    tune();
+  else if (doBench)
     bench();
   else
     correctness();

@@ -31,7 +31,12 @@ inline void psClearBit(volatile __local uint* sieve, uint byteIdx, uint unsetBit
 
 // Cross off the multiples of every sieving prime in the current segment.
 inline void psCrossOff(volatile __local uint* sieve,
+                       __local const uint* wheel,
+                       __local const uint* wheelInit,
+                       __local const uint* wheelOffset,
                        __global const uint* primes,
+                       __global const ulong* magics,
+                       uint useMagic,
                        uint numPrimes,
                        uint firstPrime,
                        uint sieveBytes,
@@ -45,12 +50,22 @@ inline void psCrossOff(volatile __local uint* sieve,
 
     // First multiple of p that is > low, rounded up to a multiple of p
     // whose cofactor is coprime to 30 (primesieve's Wheel::addSievingPrime).
-    ulong q = low / p + 1;
+    //
+    // low / p is the hottest division in the sieve: it runs once per sieving
+    // prime per segment, and a 64-bit division is emulated in ~70
+    // instructions on a GPU. Replace it with the precomputed reciprocal
+    // whenever the range is small enough for the identity to hold
+    // (low < 2^63); otherwise fall back to the real division.
+    ulong q;
+    if (useMagic)
+      q = (mul_hi(low, magics[i]) >> (31u - clz(p))) + 1;
+    else
+      q = low / p + 1;
     if (q < (ulong) p)
       q = (ulong) p;
 
     ulong m   = (ulong) p * q;
-    uint  ini = psWheelInit[(uint)(q % 30)];
+    uint  ini = wheelInit[(uint)(q % 30)];
     m += (ulong) p * (ini & 0xffu);
 
     if (m < low)
@@ -61,14 +76,14 @@ inline void psCrossOff(volatile __local uint* sieve,
       continue;
 
     uint byteIdx = (uint) byteIdx64;
-    uint state   = psWheelOffset[p % 30] + (ini >> 8);
+    uint state   = wheelOffset[p % 30] + (ini >> 8);
     uint pdiv30  = p / 30;
 
     // pdiv30 * nextMultipleFactor <= (2^32/30)*6 < 2^30, so byteIdx cannot
     // wrap around before the loop condition stops it.
     while (byteIdx < sieveBytes)
     {
-      uint e = psWheel[state];
+      uint e = wheel[state];
       psClearBit(sieve, byteIdx, e & 0xffu);
       byteIdx += pdiv30 * ((e >> 8) & 0xffu) + ((e >> 16) & 0xffu);
       state    = e >> 24;
@@ -128,6 +143,8 @@ __kernel void ps_count(const ulong segLowBase,
                        const ulong rangeLo,
                        const ulong rangeHi,
                        __global const uint*  primes,
+                       __global const ulong* magics,
+                       const uint  useMagic,
                        const uint  numPrimes,
                        const uint  firstPrime,
                        __global const uchar* presieve,
@@ -149,6 +166,21 @@ __kernel void ps_count(const ulong segLowBase,
   uint lid   = get_local_id(0);
   uint lsz   = get_local_size(0);
   uint words = sieveBytes >> 2;
+
+  // The cross-off loop indexes the wheel table with a per-prime state, so
+  // the accesses inside a warp are divergent. In __constant memory NVIDIA
+  // serialises those up to 32 ways per step; a local-memory copy is banked
+  // and handles divergent indices far better.
+  __local uint wheelLocal[64];
+  __local uint wheelInitLocal[30];
+  __local uint wheelOffsetLocal[30];
+  for (uint i = lid; i < 64; i += lsz)
+    wheelLocal[i] = psWheel[i];
+  for (uint i = lid; i < 30; i += lsz)
+  {
+    wheelInitLocal[i]   = psWheelInit[i];
+    wheelOffsetLocal[i] = psWheelOffset[i];
+  }
 
   ulong span   = (ulong) sieveBytes * 30;
   ulong segLow = segLowBase + (ulong) seg * span;
@@ -221,7 +253,9 @@ __kernel void ps_count(const ulong segLowBase,
   barrier(CLK_LOCAL_MEM_FENCE);
 
   // ---- 2. cross off the sieving primes ----------------------------------
-  psCrossOff(sieve, primes, numPrimes, firstPrime, sieveBytes, low, lid, lsz);
+  psCrossOff(sieve, wheelLocal, wheelInitLocal, wheelOffsetLocal,
+             primes, magics, useMagic, numPrimes,
+             firstPrime, sieveBytes, low, lid, lsz);
   barrier(CLK_LOCAL_MEM_FENCE);
 
   // ---- 3. mask the range boundaries and count ---------------------------

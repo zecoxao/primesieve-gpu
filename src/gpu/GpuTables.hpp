@@ -58,6 +58,18 @@ const std::vector<std::vector<uint32_t>>& defaultPreSieveGroups();
 /// CountPrintPrimes bitmasks. countType 0 returns popcount per byte.
 std::vector<uint8_t> buildKTupletTable(int countType);
 
+/// Magic number for replacing the division x / prime on the GPU.
+///
+/// Returns M = ceil(2^(64+L) / prime) with L = floor(log2(prime)), so that
+///
+///     x / prime == mul_hi(x, M) >> L        for every x < 2^63
+///
+/// A 64-bit division costs ~70 instructions on a GPU (it is emulated in
+/// software) and the sieve performs one per sieving prime per segment, so
+/// this is one of the hottest constants in the whole backend. L is not
+/// returned because the device recomputes it as 31 - clz(prime).
+uint64_t divisionMagic(uint32_t prime);
+
 /// Emits the wheel-30 tables from GpuWheel.hpp as OpenCL C / CUDA source,
 /// so that the device code and the host driver can never disagree.
 std::string wheelTableSource(bool openclConstant);

@@ -154,6 +154,38 @@ std::vector<uint8_t> buildKTupletTable(int countType)
   return table;
 }
 
+uint64_t divisionMagic(uint32_t prime)
+{
+  if (prime < 3)
+    throw primesieve_error("divisionMagic(): prime must be >= 3");
+
+  // L = floor(log2(prime))
+  uint32_t L = 0;
+  while ((prime >> (L + 1)) != 0)
+    L++;
+
+  // Long division of 2^(64+L) by prime, done bit by bit so that no 128-bit
+  // integer type is needed. The remainder stays below prime <= 2^32, so
+  // (rem << 1) cannot overflow.
+  const int n = 64 + (int) L;
+  uint64_t quot = 0;
+  uint64_t rem = 0;
+
+  for (int i = n; i >= 0; i--)
+  {
+    rem = (rem << 1) | (uint64_t) ((i == n) ? 1 : 0);
+    quot <<= 1;
+    if (rem >= prime)
+    {
+      rem -= prime;
+      quot |= 1;
+    }
+  }
+
+  // ceil(); rem is never 0 because prime is odd and > 1.
+  return quot + (rem != 0 ? 1u : 0u);
+}
+
 std::string wheelTableSource(bool openclConstant)
 {
   const char* qualifier = openclConstant ? "__constant" : "__device__ const";

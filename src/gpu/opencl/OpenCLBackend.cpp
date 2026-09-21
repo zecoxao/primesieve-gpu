@@ -146,9 +146,11 @@ private:
   cl_mem   bufRestore_ = nullptr;
 
   std::vector<uint32_t> primes_;
+  std::vector<uint64_t> magics_;
   uint32_t primesUpTo_ = 0;
   uint32_t firstPrimeIdx_ = 0;
   cl_mem   bufPrimes_ = nullptr;
+  cl_mem   bufMagics_ = nullptr;
 
   int      kTableType_ = -1;
   cl_mem   bufKTable_ = nullptr;
@@ -174,7 +176,7 @@ void OpenCLBackend::releaseBuffers()
   if (!cl_)
     return;
   cl_mem* all[] = { &bufPreSieve_, &bufPreLen_, &bufPreOff_, &bufRestore_,
-                    &bufPrimes_, &bufKTable_, &bufCounts_ };
+                    &bufPrimes_, &bufMagics_, &bufKTable_, &bufCounts_ };
   for (std::size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)
     if (*all[i]) { cl_->ReleaseMemObject(*all[i]); *all[i] = nullptr; }
 }
@@ -367,13 +369,26 @@ void OpenCLBackend::ensureSievingPrimes(uint32_t sqrtHi)
     while (firstPrimeIdx_ < primes_.size() && primes_[firstPrimeIdx_] <= preSieve_.maxPrime)
       firstPrimeIdx_++;
 
+  // One reciprocal per sieving prime, so that the kernel can replace its
+  // hottest 64-bit division with a multiply-high plus a shift.
+  magics_.resize(primes_.size());
+  for (std::size_t i = 0; i < primes_.size(); i++)
+    magics_[i] = divisionMagic(primes_[i]);
+
   if (bufPrimes_)
   {
     cl_->ReleaseMemObject(bufPrimes_);
     bufPrimes_ = nullptr;
   }
+  if (bufMagics_)
+  {
+    cl_->ReleaseMemObject(bufMagics_);
+    bufMagics_ = nullptr;
+  }
   bufPrimes_ = createBuffer(CL_MEM_READ_ONLY, primes_.size() * sizeof(uint32_t),
                             primes_.empty() ? nullptr : primes_.data(), "sieving primes");
+  bufMagics_ = createBuffer(CL_MEM_READ_ONLY, magics_.size() * sizeof(uint64_t),
+                            magics_.empty() ? nullptr : magics_.data(), "reciprocals");
 }
 
 void OpenCLBackend::ensureKTable(int countType)
@@ -401,12 +416,19 @@ uint64_t OpenCLBackend::runLaunch(uint64_t segLowBase, uint32_t numSegments,
   uint32_t restoreLen = usePreSieve_ ? (uint32_t) preSieve_.restore.size() : 0u;
   uint32_t ctype      = (uint32_t) countType;
 
+  // The reciprocal identity mul_hi(x, M) >> L == x / p only holds for
+  // x < 2^63. Above that the kernel falls back to a real 64-bit division;
+  // it is slower, but such ranges take a very long time anyway.
+  uint32_t useMagic = (hi < (1ull << 63)) ? 1u : 0u;
+
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_ulong), &segLowBase);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &sieveBytes_);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &numSegments);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_ulong), &lo);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_ulong), &hi);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_mem),   &bufPrimes_);
+  err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_mem),   &bufMagics_);
+  err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &useMagic);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &numPrimes);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_uint),  &firstPrimeIdx_);
   err |= cl_->SetKernelArg(kernel_, a++, sizeof(cl_mem),   &bufPreSieve_);
