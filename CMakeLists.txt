@@ -31,7 +31,7 @@ endif()
 
 option(WITH_MULTIARCH       "Enable runtime dispatching to fastest supported CPU instruction set" ON)
 option(WITH_OPENCL          "Build the OpenCL GPU backend"                                      ON)
-option(WITH_CUDA            "Build the CUDA GPU backend"                                        OFF)
+option(WITH_CUDA            "Build the CUDA GPU backend"                                        ON)
 
 # Check if primesieve is top level project ###########################
 
@@ -148,7 +148,26 @@ if(WITH_OPENCL)
 endif()
 
 if(WITH_CUDA)
-    include("${PROJECT_SOURCE_DIR}/cmake/gpu_cuda.cmake")
+    # The CUDA backend uses the driver API plus NVRTC, both loaded at
+    # runtime, so it builds with a plain C++ compiler and needs no CUDA
+    # toolkit here. The kernel is compiled for the device's own compute
+    # capability the first time it is used.
+    add_custom_command(
+        OUTPUT  "${PRIMESIEVE_GPU_GEN_DIR}/sieve_cu.hpp"
+        COMMAND ${CMAKE_COMMAND}
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/cuda/sieve.cu"
+                "-DOUTPUT=${PRIMESIEVE_GPU_GEN_DIR}/sieve_cu.hpp"
+                "-DSYMBOL=kSieveCuSource"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_file.cmake"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/cuda/sieve.cu"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_file.cmake"
+        COMMENT "Embedding the CUDA sieve kernel")
+
+    set(LIB_SRC ${LIB_SRC}
+                src/gpu/cuda/cuda_loader.cpp
+                src/gpu/cuda/CudaBackend.cpp
+                "${PRIMESIEVE_GPU_GEN_DIR}/sieve_cu.hpp")
+    list(APPEND PRIMESIEVE_COMPILE_DEFINITIONS "PRIMESIEVE_ENABLE_CUDA")
 endif()
 
 # Check if compiler supports CPU multiarch ###########################

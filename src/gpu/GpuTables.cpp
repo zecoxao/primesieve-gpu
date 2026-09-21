@@ -201,7 +201,10 @@ uint64_t divisionMagic(uint32_t prime)
 
 std::string wheelTableSource(bool openclConstant)
 {
+  // OpenCL C has `uint` and __constant; CUDA C++ needs `unsigned int` and
+  // __device__ const. The tables themselves are identical.
   const char* qualifier = openclConstant ? "__constant" : "__device__ const";
+  const char* uintType  = openclConstant ? "uint" : "unsigned int";
   char buf[256];
   std::string s;
 
@@ -210,7 +213,7 @@ std::string wheelTableSource(bool openclConstant)
   s += "//   bits  0..7  unsetBit, 8..15 nextMultipleFactor,\n";
   s += "//   bits 16..23 correct,  24..31 next.\n";
 
-  std::snprintf(buf, sizeof buf, "%s uint psWheel[64] = {\n", qualifier);
+  std::snprintf(buf, sizeof buf, "%s %s psWheel[64] = {\n", qualifier, uintType);
   s += buf;
   for (int i = 0; i < 64; i++)
   {
@@ -226,7 +229,7 @@ std::string wheelTableSource(bool openclConstant)
   s += "};\n";
 
   // psWheelInit packs nextMultipleFactor in bits 0..7 and wheelIndex in 8..15
-  std::snprintf(buf, sizeof buf, "%s uint psWheelInit[30] = {\n", qualifier);
+  std::snprintf(buf, sizeof buf, "%s %s psWheelInit[30] = {\n", qualifier, uintType);
   s += buf;
   for (int i = 0; i < 30; i++)
   {
@@ -238,7 +241,7 @@ std::string wheelTableSource(bool openclConstant)
   }
   s += "};\n";
 
-  std::snprintf(buf, sizeof buf, "%s uint psWheelOffset[30] = {\n", qualifier);
+  std::snprintf(buf, sizeof buf, "%s %s psWheelOffset[30] = {\n", qualifier, uintType);
   s += buf;
   for (int i = 0; i < 30; i++)
   {
@@ -247,7 +250,7 @@ std::string wheelTableSource(bool openclConstant)
   }
   s += "\n};\n";
 
-  std::snprintf(buf, sizeof buf, "%s uint psBitOffset[8] = {", qualifier);
+  std::snprintf(buf, sizeof buf, "%s %s psBitOffset[8] = {", qualifier, uintType);
   s += buf;
   for (int i = 0; i < 8; i++)
   {
